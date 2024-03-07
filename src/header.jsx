@@ -21,6 +21,7 @@ import cockpit from "cockpit";
 import React, { useRef, useState } from "react";
 
 import {
+    AlertVariant,
     Button,
     CardHeader,
     CardTitle,
@@ -35,15 +36,13 @@ import {
     TextContent,
     TextVariants
 } from "@patternfly/react-core";
-import { GripVerticalIcon, ListIcon } from "@patternfly/react-icons";
+import { GripVerticalIcon, ListIcon, UploadIcon } from "@patternfly/react-icons";
 
 const _ = cockpit.gettext;
 
 export const NavigatorCardHeader = ({
-    currentFilter, onFilterChange, isGrid, setIsGrid, sortBy, setSortBy, path
+    currentFilter, onFilterChange, isGrid, setIsGrid, sortBy, setSortBy, path, addAlert
 }) => {
-    const [chunksProgress, setChunksProgress] = useState({ number: 0, completed: 0 });
-    const [isUploading, setIsUploading] = useState(false);
     return (
         <CardHeader className="card-actionbar">
             <CardTitle component="h2" id="navigator-card-header">
@@ -63,12 +62,9 @@ export const NavigatorCardHeader = ({
                   setSortBy={setSortBy} sortBy={sortBy}
                 />
                 <UploadButton
-                  setChunksProgress={setChunksProgress}
-                  isUploading={isUploading}
-                  setIsUploading={setIsUploading}
                   path={path}
+                  addAlert={addAlert}
                 />
-                <UploadProgress chunksProgress={chunksProgress} />
             </Flex>
         </CardHeader>
     );
@@ -128,27 +124,28 @@ const ViewSelector = ({ isGrid, setIsGrid, sortBy, setSortBy }) => {
     );
 };
 
-const UploadButton = ({ setChunksProgress, isUploading, setIsUploading, path }) => {
+const UploadButton = ({ path, addAlert }) => {
     const BLOCK_SIZE = 16 * 1024;
+    const PING_COUNTER = 128;
     const ref = useRef();
     const currentDir = path.join("/") + "/";
+    const [isUploading, setIsUploading] = useState(false);
 
     const handleClick = () => {
         ref.current.click();
     };
 
     const onUpload = event => {
-        setChunksProgress({ completed: 0, number: 0 });
-
+        setIsUploading(true);
         console.log(event.target.files);
         for (let fileIndex = 0; fileIndex < event.target.files.length; fileIndex++) {
             const uploadedFile = event.target.files[fileIndex];
-            console.log(uploadedFile);
-            // TODO: duplicate file names?
+            const numberofChunks = Math.ceil(uploadedFile.size / BLOCK_SIZE);
+            console.log(numberofChunks);
             const fileName = uploadedFile.name;
+            let pingCounter = PING_COUNTER;
 
-            const reader = new FileReader();
-            reader.readAsArrayBuffer(uploadedFile);
+            // TODO: do I need to wait on the open message?
             const channel = cockpit.channel({
                 binary: true,
                 payload: "fsreplace1",
@@ -156,50 +153,106 @@ const UploadButton = ({ setChunksProgress, isUploading, setIsUploading, path }) 
                 superuser: "try"
             });
 
-            reader.onprogress = event => {
-                console.log("progress", event);
-                setChunksProgress({ completed: event.total, number: event.loaded });
+            const uploadChunk = (chunk_start) => {
+                const chunk_next = chunk_start + BLOCK_SIZE;
+                const reader = new FileReader();
+
+                reader.onload = readerEvent => {
+                    // channel.send(new window.Uint8Array(blob));
+                    channel.send(readerEvent.target.result);
+                };
+
+                // reader.onprogress = event => {
+                //     console.log("progress", event);
+                // };
+
+                reader.onloadend = (event) => {
+                    if (chunk_next <= uploadedFile.size) {
+                        // should be if uploadCounter > 0
+                        uploadChunk(chunk_next);
+                        console.log("go ping");
+                        channel.control({ command: "ping" });
+                        pingCounter = pingCounter - 1;
+                    } else {
+                        console.log("loadend", event);
+                        channel.control({ command: "done" });
+                    }
+                };
+
+                const blob = uploadedFile.slice(chunk_start, chunk_next);
+                console.log("blob", blob);
+                reader.readAsArrayBuffer(blob);
             };
 
-            reader.onload = readerEvent => {
-                let len = 0;
-                const content = readerEvent.target.result;
-                console.log(content);
-                len = content.byteLength;
+            channel.addEventListener("control", function(_event, message) {
+                console.log("control", message);
+                // pongCounter += 1;
+            });
 
-                for (let i = 0; i < len; i += BLOCK_SIZE) {
-                    const n = Math.min(len - i, BLOCK_SIZE);
-                    channel.send(new window.Uint8Array(content, i, n));
+            channel.addEventListener("message", function(_event, message) {
+                console.log("message", message);
+                // pongCounter += 1;
+            });
+
+            channel.addEventListener("close", function(_event, message) {
+                console.log("close", _event, message);
+                if (message?.problem === "not-found") {
+                    addAlert(cockpit.format(_("Cannot upload to $0"), currentDir),
+                             AlertVariant.danger, "upload-error");
+                } else if (message?.problem === "access-denied") {
+                    addAlert(cockpit.format(_("No permission to upload to $0"), currentDir),
+                             AlertVariant.danger, "upload-error");
+                } else if (message?.tag.startsWith("1:")) {
+                    addAlert(cockpit.format(_("Succesfully uploaded $0"), fileName),
+                             AlertVariant.success, "upload-success");
+                } else {
+                    addAlert(cockpit.format(_("Error during upload of $0"), fileName),
+                             AlertVariant.danger, "upload-error");
                 }
-            };
+                setIsUploading(false);
+            });
 
-            reader.onloadend = event => {
-                // TODO: check for errors?
-                console.log("loadend", event);
-                channel.control({ command: "done" });
-                setChunksProgress({ completed: 100, number: 100 });
-            };
+            // reader.onprogress = event => {
+            //     console.log("progress", event);
+            // };
+            //
+            // // reader.onload = readerEvent => {
+            // //     let len = 0;
+            // //     const content = readerEvent.target.result;
+            // //     console.log(content);
+            // //     len = content.byteLength;
+            // //
+            // //     for (let i = 0; i < len; i += BLOCK_SIZE) {
+            // //         const n = Math.min(len - i, BLOCK_SIZE);
+            // //         channel.send(new window.Uint8Array(content, i, n));
+            // //     }
+            // // };
+            //
+            // reader.onloadend = event => {
+            //     // TODO: check for errors?
+            //     // event.target.readyState !== FileReader.DONE
+            //     console.log("loadend", event);
+            //     channel.control({ command: "done" });
+            // };
+
+            // Start uploading
+            uploadChunk(0);
         }
     };
 
     return (
         <>
-            <Button variant="secondary" onClick={handleClick}>Upload</Button>
+            <Button
+              variant="secondary" icon={<UploadIcon />}
+              isDisabled={isUploading}
+              onClick={handleClick}
+            >
+                {_("Upload")}
+            </Button>
             <input
               ref={ref} type="file"
               hidden onChange={onUpload}
             />
         </>
-    );
-};
-
-const UploadProgress = ({ chunksProgress }) => {
-    const progress = Math.round(100 * (chunksProgress.number / chunksProgress.completed));
-    console.log("progress", progress);
-    return (
-        <div
-          id="progress" className="progress-pie"
-          title={`Upload ${progress}% completed`} style={{ "--progress": `${progress}%` }}
-        />
     );
 };

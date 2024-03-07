@@ -143,6 +143,7 @@ export const Application = () => {
                               isGrid={isGrid} setIsGrid={setIsGrid}
                               sortBy={sortBy} setSortBy={setSortBy}
                               path={path}
+                              addAlert={addAlert}
                             />
                             {errorMessage && <EmptyStatePanel paragraph={errorMessage} icon={ExclamationCircleIcon} />}
                             <NavigatorCardBody
