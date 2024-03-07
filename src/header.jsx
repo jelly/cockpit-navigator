@@ -124,6 +124,29 @@ const ViewSelector = ({ isGrid, setIsGrid, sortBy, setSortBy }) => {
     );
 };
 
+const readFile = (blob) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (event) => resolve(event.target.result);
+    reader.onerror = reject;
+    reader.readAsArrayBuffer(blob);
+});
+
+const writeChunk = (channel, chunk, count) => new Promise((resolve, reject) => {
+    function handleAck(event, message) {
+        if (message.command === "ack") {
+            channel.removeEventListener("control", handleAck);
+            resolve("waited on ack");
+        } else {
+            resolve("directly back to it");
+        }
+    }
+
+    channel.addEventListener("control", handleAck);
+    channel.send(chunk);
+    if (count > 0)
+        handleAck(null, { command: "fini" });
+});
+
 const UploadButton = ({ path, addAlert }) => {
     const BLOCK_SIZE = 16 * 1024;
     const PING_COUNTER = 128;
@@ -135,109 +158,64 @@ const UploadButton = ({ path, addAlert }) => {
         ref.current.click();
     };
 
-    const onUpload = event => {
+    const waitPromise = (channel, file) => new Promise((resolve, reject) => {
+        function on_control(event, message) {
+            console.log("close", message);
+            if (message?.problem === "not-found") {
+                addAlert(cockpit.format(_("Cannot upload to $0"), currentDir),
+                         AlertVariant.danger, "upload-error");
+            } else if (message?.problem === "access-denied") {
+                addAlert(cockpit.format(_("No permission to upload to $0"), currentDir),
+                         AlertVariant.danger, "upload-error");
+            } else if (message?.tag.startsWith("1:")) {
+                addAlert(cockpit.format(_("Succesfully uploaded $0"), file.name),
+                         AlertVariant.success, "upload-success");
+            } else {
+                addAlert(cockpit.format(_("Error during upload of $0"), file.name),
+                         AlertVariant.danger, "upload-error");
+            }
+            setIsUploading(false);
+            channel.removeEventListener("close", on_control);
+            resolve("yay");
+        }
+        channel.addEventListener("close", on_control);
+    });
+
+    const onUpload = async event => {
         setIsUploading(true);
         console.log(event.target.files);
-        for (let fileIndex = 0; fileIndex < event.target.files.length; fileIndex++) {
-            const uploadedFile = event.target.files[fileIndex];
-            const numberofChunks = Math.ceil(uploadedFile.size / BLOCK_SIZE);
-            console.log(numberofChunks);
-            const fileName = uploadedFile.name;
-            let pingCounter = PING_COUNTER;
 
-            // TODO: do I need to wait on the open message?
-            const channel = cockpit.channel({
-                binary: true,
-                payload: "fsreplace1",
-                path: `${currentDir}/${fileName}`,
-                superuser: "try"
-            });
+        // We only support one file upload
+        const file = event.target.files[0];
 
-            const uploadChunk = (chunk_start) => {
-                const chunk_next = chunk_start + BLOCK_SIZE;
-                const reader = new FileReader();
+        // Open fsreplace1 channel
+        const channel = cockpit.channel({
+            binary: true,
+            payload: "fsreplace1",
+            path: `${currentDir}/${file.name}`,
+            superuser: "try"
+        });
 
-                reader.onload = readerEvent => {
-                    // channel.send(new window.Uint8Array(blob));
-                    channel.send(readerEvent.target.result);
-                };
-
-                // reader.onprogress = event => {
-                //     console.log("progress", event);
-                // };
-
-                reader.onloadend = (event) => {
-                    if (chunk_next <= uploadedFile.size) {
-                        // should be if uploadCounter > 0
-                        uploadChunk(chunk_next);
-                        console.log("go ping");
-                        channel.control({ command: "ping" });
-                        pingCounter = pingCounter - 1;
-                    } else {
-                        console.log("loadend", event);
-                        channel.control({ command: "done" });
-                    }
-                };
-
-                const blob = uploadedFile.slice(chunk_start, chunk_next);
-                console.log("blob", blob);
-                reader.readAsArrayBuffer(blob);
-            };
-
-            channel.addEventListener("control", function(_event, message) {
-                console.log("control", message);
-                // pongCounter += 1;
-            });
-
-            channel.addEventListener("message", function(_event, message) {
-                console.log("message", message);
-                // pongCounter += 1;
-            });
-
-            channel.addEventListener("close", function(_event, message) {
-                console.log("close", _event, message);
-                if (message?.problem === "not-found") {
-                    addAlert(cockpit.format(_("Cannot upload to $0"), currentDir),
-                             AlertVariant.danger, "upload-error");
-                } else if (message?.problem === "access-denied") {
-                    addAlert(cockpit.format(_("No permission to upload to $0"), currentDir),
-                             AlertVariant.danger, "upload-error");
-                } else if (message?.tag.startsWith("1:")) {
-                    addAlert(cockpit.format(_("Succesfully uploaded $0"), fileName),
-                             AlertVariant.success, "upload-success");
-                } else {
-                    addAlert(cockpit.format(_("Error during upload of $0"), fileName),
-                             AlertVariant.danger, "upload-error");
-                }
-                setIsUploading(false);
-            });
-
-            // reader.onprogress = event => {
-            //     console.log("progress", event);
-            // };
-            //
-            // // reader.onload = readerEvent => {
-            // //     let len = 0;
-            // //     const content = readerEvent.target.result;
-            // //     console.log(content);
-            // //     len = content.byteLength;
-            // //
-            // //     for (let i = 0; i < len; i += BLOCK_SIZE) {
-            // //         const n = Math.min(len - i, BLOCK_SIZE);
-            // //         channel.send(new window.Uint8Array(content, i, n));
-            // //     }
-            // // };
-            //
-            // reader.onloadend = event => {
-            //     // TODO: check for errors?
-            //     // event.target.readyState !== FileReader.DONE
-            //     console.log("loadend", event);
-            //     channel.control({ command: "done" });
-            // };
-
-            // Start uploading
-            uploadChunk(0);
+        let chunk_start = 0;
+        let ack_count = 128;
+        while (chunk_start <= file.size) {
+            const percent_done = Math.floor((chunk_start / file.size) * 100);
+            console.log(ack_count, chunk_start, file.size, percent_done);
+            const chunk_next = chunk_start + BLOCK_SIZE;
+            const blob = file.slice(chunk_start, chunk_next);
+            const data = await readFile(blob);
+            ack_count -= 1;
+            const msg = await writeChunk(channel, data, ack_count);
+            console.log("writeChunk", msg);
+            ack_count += 1;
+            chunk_start = chunk_next;
         }
+        console.log('close channel');
+        channel.control({ command: "done" });
+        await waitPromise(channel, file);
+        console.log('woops channel');
+        // Needed?
+        channel.close();
     };
 
     return (
