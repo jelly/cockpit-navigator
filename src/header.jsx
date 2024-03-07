@@ -40,7 +40,7 @@ import { GripVerticalIcon, ListIcon } from "@patternfly/react-icons";
 const _ = cockpit.gettext;
 
 export const NavigatorCardHeader = ({
-    currentFilter, onFilterChange, isGrid, setIsGrid, sortBy, setSortBy, currentDir, files
+    currentFilter, onFilterChange, isGrid, setIsGrid, sortBy, setSortBy, path
 }) => {
     const [chunksProgress, setChunksProgress] = useState({ number: 0, completed: 0 });
     const [isUploading, setIsUploading] = useState(false);
@@ -63,9 +63,10 @@ export const NavigatorCardHeader = ({
                   setSortBy={setSortBy} sortBy={sortBy}
                 />
                 <UploadButton
-                  files={files} setChunksProgress={setChunksProgress}
-                  isUploading={isUploading} setIsUploading={setIsUploading}
-                  currentDir={currentDir}
+                  setChunksProgress={setChunksProgress}
+                  isUploading={isUploading}
+                  setIsUploading={setIsUploading}
+                  path={path}
                 />
                 <UploadProgress chunksProgress={chunksProgress} />
             </Flex>
@@ -127,14 +128,14 @@ const ViewSelector = ({ isGrid, setIsGrid, sortBy, setSortBy }) => {
     );
 };
 
-const UploadButton = ({ files, setChunksProgress, isUploading, setIsUploading, currentDir }) => {
+const UploadButton = ({ setChunksProgress, isUploading, setIsUploading, path }) => {
     const BLOCK_SIZE = 16 * 1024;
     const ref = useRef();
+    const currentDir = path.join("/") + "/";
 
     const handleClick = () => {
         ref.current.click();
     };
-    console.log("files", files);
 
     const onUpload = event => {
         setChunksProgress({ completed: 0, number: 0 });

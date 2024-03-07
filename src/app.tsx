@@ -142,6 +142,7 @@ export const Application = () => {
                               currentFilter={currentFilter} onFilterChange={onFilterChange}
                               isGrid={isGrid} setIsGrid={setIsGrid}
                               sortBy={sortBy} setSortBy={setSortBy}
+                              path={path}
                             />
                             {errorMessage && <EmptyStatePanel paragraph={errorMessage} icon={ExclamationCircleIcon} />}
                             <NavigatorCardBody
