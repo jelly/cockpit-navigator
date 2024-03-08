@@ -132,6 +132,44 @@ const readFile = (blob) => new Promise((resolve, reject) => {
     reader.readAsArrayBuffer(blob);
 });
 
+class Bazinga {
+    constructor(channel) {
+        this.channel = channel;
+        this.count = 128;
+        this.resolveQueue = [];
+        channel.addEventListener("control", this.on_control.bind(this));
+    }
+
+    on_control(event, message) {
+        if (message.command === "ack") {
+            console.log("receive ack", this, this.resolveQueue);
+            this.count += 1;
+            console.assert(this.count <= 128, "queue size too big", this.count);
+            console.assert(this.resolveQueue.length <= 1, "queue must be 1", this.resolveQueue);
+            for (const resolve of this.resolveQueue) {
+                console.log("Resolve LOCK");
+                resolve();
+            }
+            this.resolveQueue = [];
+        }
+    }
+
+    async wait() {
+        console.assert(this.count >= 0, "ack count went negative", this.count);
+        this.count -= 1;
+
+        if (this.count > 0) {
+            return Promise.resolve(true);
+        } else {
+            return new Promise((resolve, reject) => this.resolveQueue.push(resolve));
+        }
+    }
+
+    async acquire() {
+        return this.wait();
+    }
+}
+
 const UploadButton = ({ path, addAlert }) => {
     const BLOCK_SIZE = 16 * 1024;
     const PING_COUNTER = 128;
@@ -184,48 +222,23 @@ const UploadButton = ({ path, addAlert }) => {
             superuser: "try"
         });
 
-        const queuingStrategy = new CountQueuingStrategy({ highWaterMark: 128 });
-        const writableStream = new WritableStream(
-            {
-                // Implement the sink
-                write(chunk) {
-                    return new Promise((resolve, reject) => {
-                        function handleAck(event, message) {
-                            console.log("handleAck", message);
-                            if (message.command === "ack") {
-                                channel.removeEventListener("control", handleAck);
-                                resolve();
-                            }
-                        }
-
-                        channel.addEventListener("control", handleAck);
-                        channel.send(chunk);
-                    });
-                },
-                close() {
-                    console.log("closing writeable stream");
-                },
-                abort(err) {
-                    console.error("Sink error:", err);
-                },
-            },
-            queuingStrategy,
-        );
-
-        const defaultWriter = writableStream.getWriter();
+        const semaphore = new Bazinga(channel);
 
         let chunk_start = 0;
+        console.log("amount of chunks", Math.ceil(file.size / BLOCK_SIZE));
         while (chunk_start <= file.size) {
+            console.time("writeChunk");
             // TODO: less fine grained? This re-renders an awful lot
             const progress = Math.floor((chunk_start / file.size) * 100);
             setProgress(progress);
-            console.log(chunk_start, file.size, progress);
+            console.log(chunk_start, file.size, progress, semaphore.count);
             const chunk_next = chunk_start + BLOCK_SIZE;
             const blob = file.slice(chunk_start, chunk_next);
             const chunk = await readFile(blob);
-            await defaultWriter.ready;
-            await defaultWriter.write(chunk);
+            await semaphore.wait();
+            channel.send(chunk);
             chunk_start = chunk_next;
+            console.timeEnd("writeChunk");
         }
 
         channel.control({ command: "done" });
