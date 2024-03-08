@@ -34,7 +34,8 @@ import {
     SelectOption,
     Text,
     TextContent,
-    TextVariants
+    TextVariants,
+    Icon,
 } from "@patternfly/react-core";
 import { GripVerticalIcon, ListIcon, UploadIcon } from "@patternfly/react-icons";
 
@@ -131,28 +132,13 @@ const readFile = (blob) => new Promise((resolve, reject) => {
     reader.readAsArrayBuffer(blob);
 });
 
-const writeChunk = (channel, chunk, count) => new Promise((resolve, reject) => {
-    function handleAck(event, message) {
-        if (message.command === "ack") {
-            channel.removeEventListener("control", handleAck);
-            resolve("waited on ack");
-        } else {
-            resolve("directly back to it");
-        }
-    }
-
-    channel.addEventListener("control", handleAck);
-    channel.send(chunk);
-    if (count > 0)
-        handleAck(null, { command: "fini" });
-});
-
 const UploadButton = ({ path, addAlert }) => {
     const BLOCK_SIZE = 16 * 1024;
     const PING_COUNTER = 128;
     const ref = useRef();
     const currentDir = path.join("/") + "/";
     const [isUploading, setIsUploading] = useState(false);
+    const [progress, setProgress] = useState(0);
 
     const handleClick = () => {
         ref.current.click();
@@ -175,6 +161,7 @@ const UploadButton = ({ path, addAlert }) => {
                          AlertVariant.danger, "upload-error");
             }
             setIsUploading(false);
+            setProgress(0);
             channel.removeEventListener("close", on_control);
             resolve("yay");
         }
@@ -182,6 +169,7 @@ const UploadButton = ({ path, addAlert }) => {
     });
 
     const onUpload = async event => {
+        setProgress(0);
         setIsUploading(true);
         console.log(event.target.files);
 
@@ -196,32 +184,71 @@ const UploadButton = ({ path, addAlert }) => {
             superuser: "try"
         });
 
+        const queuingStrategy = new CountQueuingStrategy({ highWaterMark: 128 });
+        const writableStream = new WritableStream(
+            {
+                // Implement the sink
+                write(chunk) {
+                    return new Promise((resolve, reject) => {
+                        function handleAck(event, message) {
+                            console.log("handleAck", message);
+                            if (message.command === "ack") {
+                                channel.removeEventListener("control", handleAck);
+                                resolve();
+                            }
+                        }
+
+                        channel.addEventListener("control", handleAck);
+                        channel.send(chunk);
+                    });
+                },
+                close() {
+                    console.log("closing writeable stream");
+                },
+                abort(err) {
+                    console.error("Sink error:", err);
+                },
+            },
+            queuingStrategy,
+        );
+
+        const defaultWriter = writableStream.getWriter();
+
         let chunk_start = 0;
-        let ack_count = 128;
         while (chunk_start <= file.size) {
-            const percent_done = Math.floor((chunk_start / file.size) * 100);
-            console.log(ack_count, chunk_start, file.size, percent_done);
+            // TODO: less fine grained? This re-renders an awful lot
+            const progress = Math.floor((chunk_start / file.size) * 100);
+            setProgress(progress);
+            console.log(chunk_start, file.size, progress);
             const chunk_next = chunk_start + BLOCK_SIZE;
             const blob = file.slice(chunk_start, chunk_next);
-            const data = await readFile(blob);
-            ack_count -= 1;
-            const msg = await writeChunk(channel, data, ack_count);
-            console.log("writeChunk", msg);
-            ack_count += 1;
+            const chunk = await readFile(blob);
+            await defaultWriter.ready;
+            await defaultWriter.write(chunk);
             chunk_start = chunk_next;
         }
-        console.log('close channel');
+
         channel.control({ command: "done" });
         await waitPromise(channel, file);
-        console.log('woops channel');
-        // Needed?
         channel.close();
     };
+
+    let icon = <UploadIcon />;
+    if (isUploading) {
+        icon = (
+            <Icon className="progress-wrapper">
+                <div
+                  id="progress" className="progress-pie"
+                  title={`Upload ${progress}% completed`} style={{ "--progress": `${progress}%` }}
+                />
+            </Icon>
+        );
+    }
 
     return (
         <>
             <Button
-              variant="secondary" icon={<UploadIcon />}
+              variant="secondary" icon={icon}
               isDisabled={isUploading}
               onClick={handleClick}
             >

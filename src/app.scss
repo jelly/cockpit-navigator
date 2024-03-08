@@ -157,13 +157,35 @@
     white-space: break-spaces;
 }
 
+.progress-wrapper {
+  display: inline-flex;
+  align-items: center;
+}
+
 .progress-pie {
-    --progress-fill: grey;
-    --progress-empty: lightgrey;
-    aspect-ratio: 1 / 1;
-    border-radius: 100%;
-    display: inline-block;
-    height: 100%;
-    min-height: 16px;
-    background: conic-gradient(var(--progress-fill) var(--progress, 0), var(--progress-empty) var(--progress, 0));
+  --progress-fill: #333;
+  --progress-empty: #ccc;
+  /* Width can be set to 100% for a filled circle or to any units, including px */
+  --progress-width: 60%;
+  /* Size from the edge, add a px for antialiasing */
+  --mask-image: radial-gradient(
+    circle farthest-side,
+    transparent calc(100% - var(--progress-width)),
+    black calc(100% - var(--progress-width) + 1px)
+  );
+
+  aspect-ratio: 1 / 1;
+  border-radius: 100%;
+  display: inline-block;
+  height: 1em;
+  width: 1em;
+  line-height: var(--pf-v5-c-button--LineHeight);
+  text-align: center;
+  /* Multiply by a float for a bit of anti-aliasing, while preserving 0% and 100% */
+  background: conic-gradient(
+    var(--progress-fill) var(--progress, 0),
+    var(--progress-empty) calc(var(--progress, 0) * 1.005)
+  );
+  mask-image: var(--mask-image);
+  -webkit-mask-image: var(--mask-image);
 }
