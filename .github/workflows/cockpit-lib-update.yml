@@ -26,5 +26,5 @@ jobs:
 
       - name: Run cockpit-lib-update
         run: |
-          make bots
+          COCKPIT_BOTS_REF=2fa610b6171a445d6bc91734306d6da4ea36543c make bots
           bots/cockpit-lib-update
