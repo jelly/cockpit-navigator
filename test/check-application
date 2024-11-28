@@ -10,6 +10,7 @@ import shlex
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import List, Optional
 
 # import Cockpit's machinery for test VMs and its browser test API
 import testlib
@@ -2051,6 +2052,21 @@ class TestFiles(testlib.MachineCase):
         def dir_file_count(directory: str) -> int:
             return int(m.execute(f"find {directory} -mindepth 1 -maxdepth 1 | wc -l").strip())
 
+        def assert_upload_alert(files: List[str], owner_group: Optional[str] = None, *, close: bool = True) -> None:
+            if len(files) > 1:
+                b.wait_in_text(".pf-v5-c-alert__title", "Files uploaded")
+                b.wait_in_text(".pf-v5-c-alert__description", f"{len(files)} files")
+            else:
+                b.wait_in_text(".pf-v5-c-alert__title", "File uploaded")
+                b.wait_in_text(".pf-v5-c-alert__description", files[0])
+
+            if owner_group:
+                b.wait_in_text(".pf-v5-c-alert__description", f"Uploaded as {owner_group}")
+
+            if close:
+                b.click(".pf-v5-c-alert__action button")
+                b.wait_not_present(".pf-v5-c-alert__action")
+
         with tempfile.TemporaryDirectory() as tmpdir:
             # Test cancelling of upload
             big_file = str(Path(tmpdir) / "bigfile.img")
@@ -2129,9 +2145,7 @@ class TestFiles(testlib.MachineCase):
             with b.wait_timeout(30):
                 b.wait(lambda: int(m.execute(f"ls {dest_dir} | wc -l").strip()) == len(files))
 
-            b.wait_in_text(".pf-v5-c-alert__description", "Successfully uploaded file")
-            b.click(".pf-v5-c-alert__action button")
-            b.wait_not_present(".pf-v5-c-alert__action")
+            assert_upload_alert(files, "admin:admin")
 
             # Verify ownership
             filename = os.path.basename(files[0])
@@ -2164,10 +2178,7 @@ class TestFiles(testlib.MachineCase):
             b.wait_in_text("h1.pf-v5-c-modal-box__title", f"Replace file {filename}?")
             b.click("button.pf-m-warning:contains('Replace')")
             b.wait_not_present(".pf-v5-c-modal-box")
-
-            b.wait_in_text(".pf-v5-c-alert__description", "Successfully uploaded file")
-            b.click(".pf-v5-c-alert__action button")
-            b.wait_not_present(".pf-v5-c-alert__action")
+            assert_upload_alert([os.path.basename(files[0])], "admin:admin")
 
             self.assertEqual(m.execute(f"cat {dest_dir}/{filename}"),
                             subprocess.check_output(["cat", files[0]]).decode())
@@ -2211,10 +2222,7 @@ class TestFiles(testlib.MachineCase):
             b.click("button.pf-m-warning:contains('Replace')")
             b.wait_not_present(".pf-v5-c-modal-box")
 
-            b.wait_in_text(".pf-v5-c-alert__description", "Successfully uploaded file")
-            b.click(".pf-v5-c-alert__action button")
-            b.wait_not_present(".pf-v5-c-alert__action")
-
+            assert_upload_alert(files, "admin:admin")
             verify_uploaded_files(changed=True)
 
             # Upload one file new file which is uploaded automatically
@@ -2235,7 +2243,9 @@ class TestFiles(testlib.MachineCase):
                     b.click("button.pf-m-secondary:contains('Keep original')")
 
             b.wait_not_present(".pf-v5-c-modal-box")
-            b.wait_in_text(".pf-v5-c-alert__description", "Successfully uploaded file")
+            b.wait_in_text(".pf-v5-c-alert__title", "File uploaded")
+            b.wait_in_text(".pf-v5-c-alert__description", "newfile.txt")
+            b.wait_in_text(".pf-v5-c-alert__description", "Uploaded as admin:admin")
             b.click(".pf-v5-c-alert__action button")
             b.wait_not_present(".pf-v5-c-alert__action")
 
@@ -2259,11 +2269,41 @@ class TestFiles(testlib.MachineCase):
                     b.click("button.pf-m-secondary:contains('Keep original')")
 
             b.wait_not_present(".pf-v5-c-modal-box")
-            b.wait_in_text(".pf-v5-c-alert__description", "Successfully uploaded file")
-            b.click(".pf-v5-c-alert__action button")
-            b.wait_not_present(".pf-v5-c-alert__action")
+            assert_upload_alert([os.path.basename(files[-1])], "admin:admin")
 
             self.assertEqual(m.execute(f"cat {dest_dir}/{filename}"), "new content")
+
+            # As administrator upload in testuser and change ownership to root:root
+
+            m.execute("useradd --create-home testuser")
+            b.go('/files#/?path=/home/testuser')
+            b.wait_not_present('.pf-v5-c-empty-state')
+
+            filename = os.path.basename(files[-1])
+            b.click("#upload-file-btn")
+            b.upload_files("#upload-file-btn + input[type='file']", [files[-1]])
+            assert_upload_alert([filename], "testuser:testuser", close=False)
+            self.assert_owner(f'/home/testuser/{filename}', 'testuser:testuser')
+
+            b.click(".pf-v5-c-alert__action-group button")
+            b.wait_not_present(".pf-v5-c-alert__action")
+            b.wait_in_text(".pf-v5-c-modal-box__title-text", filename)
+            # BUG BUG BUG gets all values but not the specific selected value
+            b.wait_val("#edit-permissions-owner", "testuser")
+            b.wait_val("#edit-permissions-group", "testuser")
+            b.wait_val("#edit-permissions-owner-access", "read-write")
+            b.wait_val("#edit-permissions-group-access", "read-only")
+            b.wait_val("#edit-permissions-other-access", "read-only")
+
+            b.select_from_dropdown("#edit-permissions-owner", "root")
+            b.select_from_dropdown("#edit-permissions-group", "root")
+            b.click("button.pf-m-primary")
+            b.wait_not_present(".pf-v5-c-modal-box")
+
+            self.assert_owner(f'/home/testuser/{filename}', 'root:root')
+
+            b.go(f'/files#/?path={dest_dir}')
+            b.wait_not_present('.pf-v5-c-empty-state')
 
             # Non-admin session
             b.drop_superuser()
@@ -2275,7 +2315,7 @@ class TestFiles(testlib.MachineCase):
             b.click("#upload-file-btn")
             b.upload_files("#upload-file-btn + input[type='file']", [files[-1]])
 
-            b.wait_in_text(".pf-v5-c-alert__description", "Successfully uploaded file")
+            b.wait_in_text(".pf-v5-c-alert__title", "File uploaded")
             b.click(".pf-v5-c-alert__action button")
             b.wait_not_present(".pf-v5-c-alert__action")
 
